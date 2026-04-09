@@ -15,84 +15,26 @@ static PRUNE_KEYS: &[&str] = &[
     "_requiredBy",
 ];
 
-/// compress JSON content: minify + prune + flatten uniform arrays
+/// compress JSON content: prune junk keys, then encode as TOON
 pub fn compress_json(text: &str) -> Option<String> {
     let value: Value = serde_json::from_str(text).ok()?;
 
-    // try uniform array -> CSV-style first (biggest win)
-    if let Some(csv) = try_flatten_uniform_array(&value) {
-        if csv.len() < text.len() {
-            return Some(csv);
+    // prune known junk keys first
+    let pruned = deep_prune(value);
+
+    // encode as TOON (dense line-oriented format)
+    if let Ok(toon) = serde_toon2::to_string(&pruned) {
+        if toon.len() < (text.len() as f64 * 0.95) as usize {
+            return Some(toon);
         }
     }
 
-    // prune + minify
-    let pruned = deep_prune(value);
+    // fallback: plain minify
     let minified = serde_json::to_string(&pruned).ok()?;
-
     if minified.len() < (text.len() as f64 * 0.95) as usize {
         Some(minified)
     } else {
         None
-    }
-}
-
-/// if the value is an array of objects with identical keys, flatten to CSV
-fn try_flatten_uniform_array(value: &Value) -> Option<String> {
-    let arr = value.as_array()?;
-    if arr.len() < 3 {
-        return None;
-    }
-
-    // check all elements are objects with same keys
-    let first_keys: Vec<&str> = arr[0].as_object()?.keys().map(|k| k.as_str()).collect();
-    if first_keys.is_empty() {
-        return None;
-    }
-
-    for item in &arr[1..] {
-        let obj = item.as_object()?;
-        if obj.len() != first_keys.len() {
-            return None;
-        }
-        for key in &first_keys {
-            if !obj.contains_key(*key) {
-                return None;
-            }
-        }
-    }
-
-    // build CSV-style output: header + rows
-    let mut out = String::new();
-    out.push_str(&first_keys.join(","));
-    out.push('\n');
-
-    for item in arr {
-        let obj = item.as_object().unwrap();
-        let vals: Vec<String> = first_keys
-            .iter()
-            .map(|k| format_csv_value(&obj[*k]))
-            .collect();
-        out.push_str(&vals.join(","));
-        out.push('\n');
-    }
-
-    Some(out)
-}
-
-fn format_csv_value(value: &Value) -> String {
-    match value {
-        Value::Null => String::new(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => {
-            if s.contains(',') || s.contains('"') || s.contains('\n') {
-                format!("\"{}\"", s.replace('"', "\"\""))
-            } else {
-                s.clone()
-            }
-        }
-        _ => serde_json::to_string(value).unwrap_or_default(),
     }
 }
 
@@ -130,7 +72,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_minify_json() {
+    fn test_compress_json_object() {
         let json = r#"{
   "name": "test",
   "version": "1.0.0",
@@ -138,7 +80,9 @@ mod tests {
 }"#;
         let result = compress_json(json);
         assert!(result.is_some());
-        assert!(!result.unwrap().contains('\n'));
+        let out = result.unwrap();
+        // TOON output should be key: value format
+        assert!(out.contains("name:") || out.contains("name: "));
     }
 
     #[test]
@@ -161,8 +105,28 @@ mod tests {
         let result = compress_json(json);
         assert!(result.is_some());
         let out = result.unwrap();
-        // should be CSV-style
-        assert!(out.contains("name,age,city"));
-        assert!(out.contains("alice,30,nyc"));
+        // TOON should encode this as tabular
+        assert!(out.contains("alice"));
+        assert!(out.len() < json.len());
+    }
+
+    #[test]
+    fn test_toon_nested_object() {
+        let json = r#"{
+  "user": {
+    "name": "Ada",
+    "profile": {
+      "bio": "Programmer",
+      "location": "London"
+    }
+  },
+  "active": true
+}"#;
+        let result = compress_json(json);
+        assert!(result.is_some());
+        let out = result.unwrap();
+        // TOON uses indentation for nesting
+        assert!(out.contains("Ada"));
+        assert!(out.len() < json.len());
     }
 }

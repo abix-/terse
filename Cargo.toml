@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "lossless context compression for LLM tool results"
 
+[features]
+default = []
+proxy = ["tokio", "hyper", "hyper-util", "http-body-util", "bytes", "aws-config", "aws-sdk-bedrockruntime", "reqwest"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -12,6 +16,18 @@ sha2 = "0.10"
 similar = "2"
 comfy-table = "7"
 csv = "1"
+ureq = "2"
+serde_toon2 = "0.2.0"
+
+# proxy mode (behind feature flag)
+tokio = { version = "1", features = ["full"], optional = true }
+hyper = { version = "1", features = ["server", "http1"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+bytes = { version = "1", optional = true }
+aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
+aws-sdk-bedrockruntime = { version = "1", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 
 [profile.release]
 opt-level = 3

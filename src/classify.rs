@@ -27,29 +27,39 @@ pub fn classify(text: &str) -> ContentType {
         return ContentType::Unknown; // treat as already compressed
     }
 
-    // check tabular (CSV/TSV with header + data rows)
-    if is_tabular(text) {
+    // strip line numbers BEFORE tabular check -- line-numbered code has tabs
+    // that look like tabular columns (e.g. "  1\tfn main()" = 2-col TSV)
+    let stripped = strip_line_numbers(text);
+    let has_line_numbers = stripped.len() < text.len();
+    let effective = if has_line_numbers { &stripped } else { text };
+
+    // check tabular (CSV/TSV with header + data rows) on stripped content
+    if is_tabular(effective) {
         return ContentType::Tabular;
     }
 
-    // check JSON
+    // check JSON (on original text first, then stripped)
     if serde_json::from_str::<serde_json::Value>(text).is_ok() {
         return ContentType::Json;
     }
 
-    // check JSON with line numbers
-    let stripped = strip_line_numbers(text);
-    if stripped != text && serde_json::from_str::<serde_json::Value>(&stripped).is_ok() {
+    if has_line_numbers && serde_json::from_str::<serde_json::Value>(&stripped).is_ok() {
         return ContentType::JsonLined;
     }
 
     ContentType::Text
 }
 
-/// detect CSV/TSV: header row with delimiter, consistent column count across rows
+/// detect CSV/TSV: header row with delimiter, consistent column count across rows.
+/// rejects grep-like output (path:line:code) which has colons but isn't tabular.
 fn is_tabular(text: &str) -> bool {
-    let lines: Vec<&str> = text.lines().take(10).collect();
+    let lines: Vec<&str> = text.lines().take(20).collect();
     if lines.len() < 3 {
+        return false;
+    }
+
+    // reject grep-style output: "path:number:code" -- colons aren't real delimiters
+    if looks_like_grep(lines.as_slice()) {
         return false;
     }
 
@@ -60,22 +70,71 @@ fn is_tabular(text: &str) -> bool {
             continue;
         }
 
-        // check that at least 3 of the first data rows have the same column count
-        let mut matching = 0;
-        for line in &lines[1..] {
-            if line.is_empty() {
-                continue;
-            }
-            if count_fields(line, delim) == header_cols {
-                matching += 1;
-            }
+        // header row should look like column names, not code
+        if !looks_like_header(lines[0], delim) {
+            continue;
         }
-        if matching >= 2 {
+
+        // check that most data rows have the same column count (>= 70%)
+        let non_empty: Vec<&&str> = lines[1..].iter().filter(|l| !l.is_empty()).collect();
+        let matching = non_empty.iter().filter(|l| count_fields(l, delim) == header_cols).count();
+        if non_empty.len() >= 3 && matching * 10 >= non_empty.len() * 7 {
             return true;
         }
     }
 
     false
+}
+
+/// check if a line looks like a CSV/TSV header (short column names, no code syntax)
+fn looks_like_header(line: &str, delim: char) -> bool {
+    let fields: Vec<&str> = split_fields(line, delim);
+    if fields.len() < 2 {
+        return false;
+    }
+    // real headers: short identifiers, not code. reject if fields contain
+    // code-like patterns (parens, braces, semicolons, long strings)
+    let mut header_like = 0;
+    for f in &fields {
+        let f = f.trim().trim_matches('"');
+        // header fields are typically short identifiers or empty
+        if f.len() <= 30 && !f.contains('(') && !f.contains('{') && !f.contains(';') {
+            header_like += 1;
+        }
+    }
+    // majority of fields should look like headers
+    header_like * 2 > fields.len()
+}
+
+fn split_fields<'a>(line: &'a str, delim: char) -> Vec<&'a str> {
+    let mut fields = Vec::new();
+    let mut start = 0;
+    let mut in_quote = false;
+    let bytes = line.as_bytes();
+    for i in 0..bytes.len() {
+        if bytes[i] == b'"' {
+            in_quote = !in_quote;
+        } else if bytes[i] == delim as u8 && !in_quote {
+            fields.push(&line[start..i]);
+            start = i + 1;
+        }
+    }
+    fields.push(&line[start..]);
+    fields
+}
+
+static GREP_LINE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z].*:\d+:").unwrap());
+
+/// detect grep-like output: lines matching "filepath:lineno:content"
+fn looks_like_grep(lines: &[&str]) -> bool {
+    let non_empty: Vec<&&str> = lines.iter().filter(|l| !l.is_empty()).collect();
+    if non_empty.len() < 3 {
+        return false;
+    }
+    let matches = non_empty.iter().filter(|l| GREP_LINE_RE.is_match(l)).count();
+    // if majority of lines look like grep output, it's grep
+    matches * 2 > non_empty.len()
 }
 
 /// count fields respecting basic quoting

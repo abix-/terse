@@ -95,9 +95,8 @@ impl DiffState {
         }
 
         let mut found = None;
-        // only compare against last 50 targets to avoid O(n^2) blowup
-        let start = self.seen.len().saturating_sub(50);
-        for (prev_msg, prev_block, prev_text) in &self.seen[start..] {
+        // compare against all previous targets (matches tamp's behavior)
+        for (prev_msg, prev_block, prev_text) in &self.seen[..] {
             let sim = jaccard_similarity(prev_text, text);
             if sim > 0.5 && sim < 1.0 {
                 let diff = compute_diff(prev_text, text);

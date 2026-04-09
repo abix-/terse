@@ -16,38 +16,18 @@ pub enum PathSegment {
     Index(usize),
 }
 
-/// extract compression targets from an Anthropic API request body
-pub fn extract_targets(body: &Value, cache_safe: bool) -> Vec<Target> {
+/// extract all compression targets from an Anthropic API request body
+pub fn extract_targets(body: &Value) -> Vec<Target> {
     let messages = match body.get("messages").and_then(|m| m.as_array()) {
         Some(m) => m,
         None => return Vec::new(),
     };
 
-    if cache_safe {
-        extract_cache_safe(messages)
-    } else {
-        extract_all(messages)
-    }
-}
-
-/// cacheSafe=false: extract ALL tool_result content blocks
-fn extract_all(messages: &[Value]) -> Vec<Target> {
     let mut targets = Vec::new();
     for (mi, msg) in messages.iter().enumerate() {
         targets.extend(extract_from_message(msg, mi));
     }
     targets
-}
-
-/// cacheSafe=true: only extract from the LAST user message group with eligible tool_results
-fn extract_cache_safe(messages: &[Value]) -> Vec<Target> {
-    for mi in (0..messages.len()).rev() {
-        let targets = extract_from_message(&messages[mi], mi);
-        if targets.iter().any(|t| t.compressed.is_none()) {
-            return targets;
-        }
-    }
-    Vec::new()
 }
 
 fn extract_from_message(msg: &Value, mi: usize) -> Vec<Target> {
@@ -177,7 +157,7 @@ mod tests {
                 {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "file contents here"}]}
             ]
         });
-        let targets = extract_targets(&body, false);
+        let targets = extract_targets(&body);
         assert_eq!(targets.len(), 2); // "hello" + tool_result
     }
 
@@ -189,7 +169,7 @@ mod tests {
                 {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": "error msg"}]}
             ]
         });
-        let targets = extract_targets(&body, false);
+        let targets = extract_targets(&body);
         assert_eq!(targets.len(), 0);
     }
 

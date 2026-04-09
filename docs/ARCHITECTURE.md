@@ -1,245 +1,202 @@
-# tamp-rust architecture
+# terse architecture
 
-## why this exists
+## what it does
 
-tamp (Node.js) claims 52.6% token savings on LLM API requests. we benchmarked it against 108 real Claude Code conversations (97.3MB total) and found:
+terse is a lossless context compressor for LLM API requests. it reduces the size of tool_result content (file reads, query outputs, API responses) in conversation history before sending to the API. same data, fewer tokens.
 
-- `cacheSafe=true` (default): **0.0% savings**
-- `cacheSafe=false` (full scan): **2.7% savings**
-- 11/108 conversations failed outright (413/502 on anything >2.5MB)
-- processing time: 17-117 seconds per conversation over 1MB
-- root cause: `@anthropic-ai/tokenizer countTokens()` takes ~8s per 100KB, called 6x per block
+## deployment
 
-the approach is valid. the implementation is not. tamp-rust is a 1:1 reimplementation in rust that:
-- handles any payload size (no 2.5MB ceiling)
-- processes in milliseconds, not minutes
-- skips the catastrophic tokenizer (uses chars/4 estimate)
-- same compression stages, same API, same config
+terse runs as an **LLM gateway** (HTTP proxy) between Claude Code and the API. it supports two backends:
 
-## what tamp does
-
-tamp is an HTTP proxy that sits between an LLM client and the API:
+### bedrock (AWS)
 
 ```
-claude code -> tamp (:7778) -> anthropic API
+Claude Code --(plain HTTP)--> terse (:7778) --(SigV4)--> Bedrock Runtime
 ```
 
-it intercepts POST requests to `/v1/messages`, parses the JSON body, finds `tool_result` content blocks in the messages array, compresses them, and forwards the smaller payload upstream.
+```bash
+# claude code settings
+ANTHROPIC_BEDROCK_BASE_URL=http://localhost:7778
+CLAUDE_CODE_SKIP_BEDROCK_AUTH=1
 
-claude code sends the ENTIRE conversation history in every API call. a 200-message conversation with file reads, grep results, and code outputs can be 5-10MB. many tool results are duplicates (re-reading the same file) or near-duplicates (reading a file after a small edit).
-
-## modules (1:1 mapping to tamp)
-
-```
-tamp (node)          tamp-rust
------------          ---------
-config.js        ->  config.rs
-detect.js        ->  detect.rs
-providers.js     ->  providers.rs
-compress.js      ->  compress.rs
-stats.js         ->  stats.rs
-index.js         ->  proxy.rs
-                     main.rs (CLI entry point)
+# terse handles auth via standard AWS credential chain
+AWS_PROFILE=your-profile
+AWS_REGION=us-east-1
 ```
 
-### config.rs
+Claude Code sends unsigned requests. terse compresses the body, then forwards to Bedrock using the AWS SDK (which handles SigV4 signing, SSO token refresh, etc).
 
-loads configuration from env vars and optional config file at `~/.config/tamp/config`.
-
-| env var | default | description |
-|---------|---------|-------------|
-| TAMP_PORT | 7778 | proxy listen port |
-| TAMP_UPSTREAM | https://api.anthropic.com | upstream API URL |
-| TAMP_STAGES | minify,toon,strip-lines,whitespace,dedup,diff,prune | compression pipeline |
-| TAMP_MIN_SIZE | 200 | skip content smaller than this (chars) |
-| TAMP_LOG | true | log to stderr |
-| TAMP_MAX_BODY | 10485760 | passthrough bodies larger than this |
-| TAMP_CACHE_SAFE | true | only compress newest tool_result group |
-
-config file format: `KEY=value` per line, `#` comments. env vars override file.
-
-### detect.rs
-
-content classification. determines what compression stages apply.
+### anthropic direct
 
 ```
-classifyContent(text) -> toon | json | json-lined | text | unknown
+Claude Code --(x-api-key)--> terse (:7778) --(x-api-key)--> api.anthropic.com
 ```
 
-rules (evaluated in order):
-1. **toon**: first line matches `[TOON]` or `\w+\[\d+\]{` or `\w+\[\d+]:`
-2. **json**: valid JSON parse
-3. **json-lined**: strip line number prefixes (`^ *\d+[\t->]`), then valid JSON parse
-4. **text**: non-empty string that isn't any of the above
-5. **unknown**: empty or non-string
-
-helper: `stripLineNumbers(text)` -- if 2+ of first 5 non-empty lines match `^ *\d+[\t->]`, strip those prefixes from all lines. this handles Claude Code's Read tool output format (`  1\tline content`).
-
-### providers.rs
-
-extracts compression targets from API request bodies. each provider knows its API format.
-
-**anthropic** (the one we care about):
-- walks `body.messages[]`
-- for each message with `role: "user"`, examines `content[]` array
-- finds blocks with `type: "tool_result"`
-- extracts the `content` field (string) as a compression target
-- skips blocks where `is_error: true`
-- records the JSON path for later replacement: `["messages", mi, "content", ci, "content"]`
-
-**cacheSafe mode** (default):
-- only extracts targets from the LAST user message group that has eligible tool_results
-- walks messages array backwards, finds first user message with non-skipped tool_results
-- this preserves prompt caching -- anthropic caches message prefixes, so we only touch the newest content that hasn't been cached yet
-
-**cacheSafe=false**:
-- extracts ALL tool_result content blocks across ALL messages
-- enables cross-message dedup and diff (much higher savings)
-- breaks prompt caching but saves more tokens overall
-
-also has openai and gemini providers (same idea, different JSON paths). only anthropic matters for claude code.
-
-### compress.rs
-
-the compression pipeline. stages run in this order:
-
-#### 1. dedup (cross-target)
-- hash each target's text (SHA-256 for >=128 chars, identity for shorter)
-- if same hash+text already seen in an earlier target, replace content with:
-  `[see tool_result in message {mi}, block {bi} -- identical content]`
-- handles: re-reading the same file multiple times in a conversation
-
-#### 2. diff (cross-target)
-- for targets >200 chars that weren't deduped
-- compare against all previously seen targets using jaccard similarity on line sets
-- if similarity >0.5 and <1.0, compute unified diff (context=1 line)
-- if diff body < 50% of original text length, replace with:
-  `[diff from tool_result in message {mi}, block {bi}]:\n{diff_body}`
-- handles: reading a file, editing it, reading it again
-
-#### 3. per-block compression (applied to each remaining non-dedup/non-diff target)
-
-classify content, then:
-
-**text content:**
-- `strip-lines`: remove line number prefixes (see detect.rs)
-- `whitespace`: strip trailing spaces/tabs per line, collapse 3+ newlines to 2
-- accept if result < 90% of original length
-
-**json / json-lined content:**
-- `strip-lines`: remove line number prefixes (if json-lined)
-- `prune`: recursively remove npm metadata keys (integrity, shasum, _id, _from, _resolved, _integrity, _nodeVersion, _npmVersion, _phantomChildren, _requiredBy, resolved if starts with https://registry.)
-- `minify`: re-serialize JSON with no whitespace
-- accept if result < original length
-
-**toon content:**
-- skip (already compressed)
-
-**unknown / too small (<minSize):**
-- skip
-
-#### stages we skip (not worth porting)
-- **toon encoding**: complex custom format, marginal gains over minified JSON. tamp itself falls back to minify when toon doesn't help.
-- **llmlingua/textpress/foundation-models**: require external AI services
-- **strip-comments**: opt-in, not in default stages
-
-### stats.rs
-
-tracks session-level compression statistics:
-- total requests processed
-- total blocks compressed
-- total chars original / saved
-- estimated tokens saved (chars / 4)
-
-### proxy.rs
-
-HTTP proxy server. hyper-based (or axum).
-
-request flow:
-1. accept incoming request
-2. if not POST to `/v1/messages` (or openai/gemini equivalents), passthrough
-3. read full body (up to maxBody, passthrough if larger)
-4. decompress if content-encoding set (gzip, deflate, br, zstd)
-5. parse JSON
-6. extract targets via provider
-7. run compression pipeline
-8. re-serialize JSON
-9. forward to upstream with updated content-length
-10. pipe response back to client
-
-also serves `/health` endpoint with session stats JSON.
-
-### main.rs
-
-CLI entry point. two modes:
-
-**proxy mode** (default): `tamp-rust` or `tamp-rust -y`
-- starts HTTP proxy on configured port
-- identical behavior to `npx tamp -y`
-
-**benchmark mode**: `tamp-rust bench`
-- loads JSONL conversation files from `~/.claude/projects/*/`
-- reconstructs full message arrays
-- runs compression pipeline directly (no HTTP)
-- reports savings by conversation size bucket
-- no network, no proxy, no mock upstream needed
-
-## data flow
-
-```
-                    provider.extract()
-                         |
-                    [target, target, target, ...]
-                         |
-                    dedup stage (cross-target)
-                         |
-                    diff stage (cross-target)
-                         |
-                    per-block compress:
-                      classify -> strip-lines -> whitespace -> minify/prune
-                         |
-                    provider.apply() -- write compressed text back into body
-                         |
-                    JSON.stringify -> forward upstream
+```bash
+ANTHROPIC_BASE_URL=http://localhost:7778
+# x-api-key header passes through automatically
 ```
 
-## file layout
+### why not hooks?
+
+Claude Code hooks can't do this. there is no hook that fires before the API request is sent. available hooks (PreToolUse, PostToolUse) operate on individual tool calls, not the assembled conversation body. they can't:
+- see all tool results together (needed for cross-target dedup/diff)
+- modify built-in tool results (Read, Bash, Grep)
+- intercept the API request before sending
+
+the gateway model is the only way to compress the full conversation context.
+
+### why not tamp?
+
+tamp is the prior art (Node.js proxy). problems:
+- **only supports Anthropic direct** -- no Bedrock, no Vertex. hardcoded to `api.anthropic.com` with `x-api-key` auth. no SigV4.
+- **170x slower** -- 99% of runtime is `@anthropic-ai/tokenizer` (Rust->WASM BPE tokenizer) called twice per target. purely cosmetic "tokens saved" metric.
+- **fails on large payloads** -- 413 on >2.5MB (Node http.createServer body limit). 502 on large payloads (tokenizer timeout).
+- **cacheSafe=true is counterproductive** -- default mode only compresses the newest message, which breaks prompt caching by changing whether each message is compressed across requests. see BENCHMARKS.md.
+
+## compression pipeline
 
 ```
-tamp-rust/
+request body (JSON)
+    |
+extract tool_result content blocks from messages[]
+    |
+phase 1: cross-target dedup (SHA-256 hash, identical -> back-reference)
+    |
+phase 2: cross-target diff (Jaccard similarity > 0.5 -> unified diff)
+    |
+phase 3: per-block compression:
+    classify -> tabular | json | json-lined | text | unknown
+    |
+    tabular: factor out low-cardinality columns, shorten timestamps
+    json: prune npm keys -> TOON encoding -> fallback minify
+    json-lined: strip line numbers -> json path
+    text: strip line numbers, normalize whitespace
+    unknown: skip
+    |
+apply compressed content back to JSON body
+    |
+forward to API
+```
+
+### stages
+
+| stage | scope | what it does | typical savings |
+|-------|-------|-------------|-----------------|
+| dedup | cross-target | replace identical content with back-reference | 96% on hits |
+| diff | cross-target | replace similar content with unified diff | 74% on hits |
+| tabular | per-block | columnar grouping for CSV/TSV, timestamp shortening | 50% on hits |
+| toon | per-block | JSON -> TOON dense line-oriented encoding via serde_toon2 | 22% on hits |
+| json-minify | per-block | prune npm keys + JSON minification | 26% on hits |
+| strip-lines | per-block | remove line number prefixes (Claude Read tool output) | 21% on hits |
+| whitespace | per-block | trailing space removal, blank line collapse | ~5% on hits |
+
+### TOON format
+
+JSON objects become `key: value` per line. arrays of uniform objects become tabular (header + CSV rows). nested objects use indentation. no braces, minimal quoting.
+
+```json
+{"name":"Ada","age":42,"tags":["rust","serde"]}
+```
+```
+name: Ada
+age: 42
+tags[2]: rust,serde
+```
+
+implemented via `serde_toon2` crate (`serde_toon2::to_string(&serde_json::Value)`).
+
+### content classification
+
+order matters -- first match wins:
+
+1. **TOON**: first line matches `[TOON]` or `\w+\[\d+\][{:]` -> skip (already compressed)
+2. strip line numbers if present (handles Claude Read tool `  42\tcode`)
+3. **tabular**: header row + consistent column count, rejects grep output (`path:line:code`)
+4. **JSON**: valid `serde_json::from_str` parse
+5. **JSON-lined**: after stripping line numbers, valid JSON parse
+6. **text**: everything else
+7. **unknown**: empty, too small (<200 bytes)
+
+## project structure
+
+```
+terse/
   Cargo.toml
   src/
-    main.rs          -- CLI entry, arg parsing, bench mode
-    config.rs        -- config loading (env + file)
-    detect.rs        -- content classification
-    providers.rs     -- target extraction (anthropic, openai, gemini)
-    compress.rs      -- compression pipeline + stages
-    stats.rs         -- session statistics
-    proxy.rs         -- HTTP proxy server
+    main.rs        -- CLI: benchmark mode (default), proxy mode (--proxy)
+    proxy.rs       -- LLM gateway: Bedrock (AWS SDK) + Anthropic (passthrough)
+    compress.rs    -- pipeline orchestration, stage enum
+    extract.rs     -- target extraction from Anthropic message bodies
+    classify.rs    -- content type detection
+    tabular.rs     -- CSV/TSV columnar compression
+    json.rs        -- JSON prune + TOON encoding + minification
+    text.rs        -- strip-lines, whitespace, dedup, diff
   docs/
-    ARCHITECTURE.md  -- this file
-    BENCHMARKS.md    -- benchmark methodology and results
+    ARCHITECTURE.md
+    BENCHMARKS.md
 ```
 
 ## dependencies
 
+### core (always)
+
 | crate | purpose |
 |-------|---------|
-| tokio | async runtime (proxy mode) |
-| hyper | HTTP proxy |
 | serde + serde_json | JSON parsing |
-| regex | line number detection, whitespace normalization |
+| serde_toon2 | TOON encoding for JSON |
+| regex | line number detection, content classification |
 | sha2 | dedup hashing |
 | similar | unified diff generation |
 | comfy-table | benchmark output formatting |
+| csv | CSV parsing |
+| ureq | HTTP client (benchmark mode, tamp comparison) |
 
-## implementation order (by immediate impact)
+### proxy mode (`--features proxy`)
 
-1. **detect.rs + providers.rs** -- target extraction, without this nothing works
-2. **compress.rs: dedup** -- biggest single-stage win (identical file re-reads)
-3. **compress.rs: diff** -- second biggest (similar file re-reads)
-4. **compress.rs: minify + prune** -- JSON compaction
-5. **compress.rs: strip-lines + whitespace** -- line numbers, whitespace
-6. **main.rs: bench mode** -- validate against tamp's numbers using real data
-7. **config.rs + stats.rs** -- configuration and tracking
-8. **proxy.rs + main.rs: proxy mode** -- drop-in tamp replacement
+| crate | purpose |
+|-------|---------|
+| tokio | async runtime |
+| hyper + hyper-util | HTTP server |
+| http-body-util + bytes | request body handling |
+| aws-config | AWS credential loading (SSO, profile, env) |
+| aws-sdk-bedrockruntime | Bedrock API calls with SigV4 |
+| reqwest | HTTP client for Anthropic passthrough |
+
+## CLI
+
+```bash
+# benchmark mode (default) -- run against real conversation data
+cargo run --release
+cargo run --release -- --limit 10
+cargo run --release -- --bench --limit 10  # head-to-head vs tamp
+
+# proxy mode -- LLM gateway
+cargo run --release --features proxy -- --proxy
+cargo run --release --features proxy -- --proxy --port 7790
+
+# build optimized proxy binary
+cargo build --release --features proxy
+./target/release/terse --proxy
+```
+
+## request flow (proxy mode)
+
+1. Claude Code sends POST to terse (no auth for Bedrock, API key for Anthropic)
+2. terse reads full request body
+3. parses JSON, extracts tool_result content blocks from messages[]
+4. runs compression pipeline (dedup -> diff -> per-block)
+5. applies compressed content back into JSON
+6. routes based on URL path:
+   - `/model/{id}/invoke*` -> Bedrock via AWS SDK (streaming supported)
+   - `/v1/messages` -> Anthropic via reqwest (headers passed through)
+7. streams response back to Claude Code unchanged
+8. logs compression stats to stderr
+
+## what's NOT compressed
+
+- assistant messages (only user messages with tool_results)
+- is_error: true tool results
+- content < 200 bytes
+- already-compressed TOON content
+- non-POST requests (GET, OPTIONS, etc.)
