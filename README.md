@@ -128,11 +128,18 @@ terse --bench --limit 10         # head-to-head vs tamp
 
 ## prior art
 
-No public implementations exist for:
-- Claude Code + Bedrock LLM gateway (zero results on github.com for `CLAUDE_CODE_SKIP_BEDROCK_AUTH`)
-- Lossless text-to-text re-encoding of LLM tool results
+`CLAUDE_CODE_SKIP_BEDROCK_AUTH` + `ANTHROPIC_BEDROCK_BASE_URL` is the documented pattern for Bedrock gateway proxies. The [official Claude Code docs](https://github.com/anthropics/claude-code/issues/44899) show:
 
-tamp (Node.js proxy by @sliday) is the closest prior art but only supports Anthropic direct.
+```bash
+export ANTHROPIC_BEDROCK_BASE_URL='https://your-llm-gateway.com/bedrock'
+export CLAUDE_CODE_SKIP_BEDROCK_AUTH=1 # If gateway handles AWS auth
+```
+
+46 GitHub issues reference this pattern (Tailscale Aperture, OpenCode, Zed, etc.). No public repo implements a **compression** gateway -- all existing gateways are auth/routing proxies.
+
+No prior art exists for lossless text-to-text re-encoding of LLM tool results.
+
+tamp (Node.js proxy by @sliday) is the closest prior art for compression but only supports Anthropic direct.
 
 ## why not hooks?
 

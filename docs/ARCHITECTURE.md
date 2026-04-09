@@ -32,6 +32,8 @@ AWS_REGION=us-east-1
 
 `CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` is required because Bedrock uses SigV4 request signing, where the request body is part of the signature. normally Claude Code signs the request before sending. but terse modifies the body (compression), which would invalidate that signature. so we tell Claude Code to skip signing and send plain HTTP to terse. terse then compresses the body and signs the modified request itself via the AWS SDK before forwarding to Bedrock.
 
+this is the documented pattern for Bedrock gateway proxies -- 46 GitHub issues reference it (Tailscale Aperture, OpenCode, Zed, etc.). terse is the first to use it for compression rather than just auth/routing.
+
 ### anthropic direct
 
 ```
