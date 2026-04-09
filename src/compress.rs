@@ -164,7 +164,7 @@ pub fn run_single_stage(targets: &[Target], stage: Stage) -> Vec<TargetResult> {
                 // clone the dedup state check -- we can't mutate targets here
                 let mut dedup_copy = DedupState::new();
                 std::mem::swap(&mut dedup_copy, &mut dedup);
-                let result = dedup_copy.check(&target.text, target.msg_idx, target.block_idx);
+                let _result = dedup_copy.check(&target.text, target.msg_idx, target.block_idx);
                 std::mem::swap(&mut dedup_copy, &mut dedup);
                 // re-do properly
                 let comp = dedup.check(&target.text, target.msg_idx, target.block_idx);

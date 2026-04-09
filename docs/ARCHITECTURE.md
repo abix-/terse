@@ -1,5 +1,11 @@
 # terse architecture
 
+## status
+
+compression pipeline: complete and tested against 114 real conversations.
+proxy gateway: compiles, routes correctly, tested with curl against both backends.
+NOT yet tested: live end-to-end Claude Code session, streaming response passthrough, long-running SSO refresh.
+
 ## what it does
 
 terse is a lossless context compressor for LLM API requests. it reduces the size of tool_result content (file reads, query outputs, API responses) in conversation history before sending to the API. same data, fewer tokens.
@@ -200,3 +206,10 @@ cargo build --release --features proxy
 - content < 200 bytes
 - already-compressed TOON content
 - non-POST requests (GET, OPTIONS, etc.)
+
+## known limitations
+
+- **bedrock streaming buffers**: `handle_bedrock()` collects all EventStream chunks into memory before returning. not true streaming passthrough -- adds latency for first token. needs rewrite to pipe chunks as they arrive.
+- **no reconnect**: if terse crashes, Claude Code gets a connection error. no automatic retry or reconnect. user must restart terse and retry.
+- **SSO token refresh**: untested during long sessions. aws-config should handle it transparently but hasn't been verified.
+- **no live testing**: proxy has only been tested with curl, not with a real Claude Code session end-to-end.

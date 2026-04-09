@@ -30,6 +30,7 @@ struct ConvoPayload {
     project: String,
     #[allow(dead_code)]
     file: String,
+    #[allow(dead_code)]
     segment: usize,
     message_count: usize,
     original_bytes: usize,
@@ -846,8 +847,6 @@ fn run_bench(payloads: &[ConvoPayload]) {
     // === TERSE STAGE ATTRIBUTION (aggregate across all segments) ===
     println!("\n--- TERSE STAGE ATTRIBUTION (all segments) ---\n");
     let mut stage_totals: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new(); // count, orig, compressed
-    let mut total_target_orig = 0usize;
-    let mut total_target_terse = 0usize;
     let mut skipped_count = 0usize;
     let mut skipped_bytes = 0usize;
     let mut unchanged_count = 0usize;
@@ -855,8 +854,6 @@ fn run_bench(payloads: &[ConvoPayload]) {
 
     for r in &results {
         for td in &r.targets {
-            total_target_orig += td.original_bytes;
-            total_target_terse += td.terse_bytes;
             if td.original_bytes < MIN_SIZE {
                 skipped_count += 1;
                 skipped_bytes += td.original_bytes;
@@ -1104,14 +1101,13 @@ fn main() {
 
     if dump_mode {
         // analyze redundancy in ALL unchanged targets like 7zip would
-        use std::collections::HashMap;
         println!("\n=== REDUNDANCY ANALYSIS (7zip thinking) ===\n");
 
         let mut all_texts: Vec<(usize, usize, usize, String)> = Vec::new();
         for payload in &payloads {
             let mut targets = extract::extract_targets(&payload.body);
-            let results = compress::compress_targets(&mut targets);
-            for (i, target) in targets.iter().enumerate() {
+            let _results = compress::compress_targets(&mut targets);
+            for target in targets.iter() {
                 if target.text.len() < MIN_SIZE {
                     continue;
                 }

@@ -28,6 +28,7 @@ use tokio::net::TcpListener;
 struct ProxyState {
     bedrock_client: Option<aws_sdk_bedrockruntime::Client>,
     http_client: reqwest::Client,
+    #[allow(dead_code)]
     region: String,
 }
 

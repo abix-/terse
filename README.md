@@ -2,6 +2,23 @@
 
 Lossless context compression for LLM API requests. Reduces token count in tool_result content without losing any data.
 
+## status
+
+**Working but not yet tested end-to-end with Claude Code.**
+
+What works:
+- Compression pipeline: dedup, diff, tabular, TOON, strip-lines, whitespace -- all stages functional
+- Proxy compiles and starts, routes requests correctly
+- Bedrock path: sends requests via AWS SDK, gets valid responses
+- Anthropic path: forwards with header passthrough, gets valid responses
+- Benchmarked against 114 real conversations (245 segments, 7.4MB top 10)
+
+What hasn't been tested:
+- **Live Claude Code session through the proxy** -- tested with curl, not with real Claude Code
+- **Streaming responses** -- Bedrock streaming currently buffers all events before returning (no true passthrough yet)
+- **Long-running sessions** -- SSO token refresh during multi-hour sessions untested
+- **Error recovery** -- proxy crashes = Claude Code loses connection, no reconnect logic
+
 ## problem
 
 LLM API calls include the full conversation history. Tool results (file reads, query outputs, API responses) are the bulk of that payload -- full of redundancy that inflates token count without adding information.
@@ -21,9 +38,23 @@ Content-aware text-to-text re-encoding. Detects structure in tool_result content
 
 Output is always valid, human-readable text. No binary encoding.
 
-## deployment
+## how it works
 
-terse runs as an **LLM gateway** between Claude Code and the API. Supports both AWS Bedrock and Anthropic direct.
+terse runs as an **LLM gateway** (HTTP proxy) between Claude Code and the API.
+
+```
+Claude Code --> terse (:7778) --> Bedrock or Anthropic API
+```
+
+1. Claude Code sends API request to terse (localhost:7778) instead of directly to the API
+2. terse reads the full request body (JSON with messages array)
+3. extracts tool_result content blocks from all user messages
+4. runs the compression pipeline (dedup -> diff -> per-block stages)
+5. applies compressed content back into the JSON body
+6. forwards the smaller request to the actual API (Bedrock or Anthropic)
+7. streams the response back unchanged
+
+terse only modifies the request body (compressing tool results). Responses pass through untouched.
 
 ### bedrock
 
@@ -36,7 +67,11 @@ ANTHROPIC_BEDROCK_BASE_URL=http://localhost:7778
 CLAUDE_CODE_SKIP_BEDROCK_AUTH=1
 ```
 
-`CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` tells Claude Code not to SigV4-sign the request. This is required because SigV4 includes the request body in the signature -- if Claude Code signs first and terse then modifies the body (compression), the signature is invalidated and Bedrock rejects it. Instead, Claude Code sends unsigned HTTP to terse, and terse signs the compressed request via the AWS SDK before forwarding to Bedrock. Uses the standard AWS credential chain (AWS_PROFILE, SSO, env vars).
+**Why `CLAUDE_CODE_SKIP_BEDROCK_AUTH=1`?**
+
+AWS Bedrock uses SigV4 request signing. SigV4 includes a SHA-256 hash of the request body in the Authorization header. Normally Claude Code signs the request, but terse modifies the body after receiving it (compression), which would invalidate that signature. So we tell Claude Code to skip signing and send plain HTTP to terse on localhost. terse then compresses the body and signs the modified request itself using the AWS SDK before forwarding to Bedrock.
+
+The unsigned hop is localhost only (127.0.0.1). terse signs with real AWS credentials via the standard credential chain (AWS_PROFILE, SSO, env vars, IMDS).
 
 ### anthropic direct
 
@@ -48,6 +83,8 @@ cargo run --release --features proxy -- --proxy
 ANTHROPIC_BASE_URL=http://localhost:7778
 # x-api-key header passes through automatically
 ```
+
+No signing needed -- Anthropic uses a static API key in the `x-api-key` header. terse forwards all headers (except hop-by-hop) unchanged.
 
 ## benchmarks
 
@@ -74,6 +111,8 @@ cargo build --release
 cargo build --release --features proxy
 ```
 
+The `proxy` feature adds tokio, hyper, aws-config, aws-sdk-bedrockruntime, and reqwest as dependencies. These are all optional and don't affect the benchmark binary.
+
 ## usage
 
 ```bash
@@ -86,6 +125,14 @@ terse                            # all segments
 terse --limit 10                 # top 10 by size
 terse --bench --limit 10         # head-to-head vs tamp
 ```
+
+## prior art
+
+No public implementations exist for:
+- Claude Code + Bedrock LLM gateway (zero results on github.com for `CLAUDE_CODE_SKIP_BEDROCK_AUTH`)
+- Lossless text-to-text re-encoding of LLM tool results
+
+tamp (Node.js proxy by @sliday) is the closest prior art but only supports Anthropic direct.
 
 ## why not hooks?
 
