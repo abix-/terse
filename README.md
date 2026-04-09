@@ -88,16 +88,19 @@ No signing needed -- Anthropic uses a static API key in the `x-api-key` header. 
 
 ## benchmarks
 
-Tested on 114 real Claude Code conversations (245 segments, 7.4MB top 10):
+Live head-to-head on 114 real Claude Code conversations (249 segments, 102.4MB total):
 
 | Metric | terse | tamp |
 |---|---|---|
-| Savings | 3.5% | 3.5% |
-| Speed | **0.4s** | 70s |
-| Failures | 0 | 11/108 (413/502 on >2.5MB) |
+| Segments | 249 | 249 ok, 0 failed |
+| Savings (full body) | 3.4% | 3.4% |
+| Savings (tool_result only) | 7.3% | 7.3% |
+| Speed | **4.2s** | 907.2s |
 | Bedrock support | **yes** | no |
 
-**terse is 170x faster** with equivalent compression. tamp's bottleneck is a WASM tokenizer called twice per target for cosmetic "tokens saved" stats. terse skips it (fewer bytes = fewer tokens, the relationship is ~linear at 1 token ~= 4 bytes).
+**terse is 216x faster** with identical compression. tamp's bottleneck is a WASM tokenizer called twice per target for cosmetic "tokens saved" stats. terse skips it (fewer bytes = fewer tokens, ~linear at 1 token ~= 4 bytes).
+
+The 3.4% is on the full API request body. ~55% of each request is non-compressible (model params, system prompt, assistant messages). On compressible content alone, savings are 7.3%.
 
 See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for detailed per-segment, per-target, per-stage results.
 
