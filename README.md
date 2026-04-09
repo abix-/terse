@@ -36,7 +36,7 @@ ANTHROPIC_BEDROCK_BASE_URL=http://localhost:7778
 CLAUDE_CODE_SKIP_BEDROCK_AUTH=1
 ```
 
-terse handles SigV4 signing via the AWS SDK. Uses standard credential chain (AWS_PROFILE, SSO, env vars).
+`CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` tells Claude Code not to SigV4-sign the request. This is required because SigV4 includes the request body in the signature -- if Claude Code signs first and terse then modifies the body (compression), the signature is invalidated and Bedrock rejects it. Instead, Claude Code sends unsigned HTTP to terse, and terse signs the compressed request via the AWS SDK before forwarding to Bedrock. Uses the standard AWS credential chain (AWS_PROFILE, SSO, env vars).
 
 ### anthropic direct
 

@@ -24,7 +24,7 @@ AWS_PROFILE=your-profile
 AWS_REGION=us-east-1
 ```
 
-Claude Code sends unsigned requests. terse compresses the body, then forwards to Bedrock using the AWS SDK (which handles SigV4 signing, SSO token refresh, etc).
+`CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` is required because Bedrock uses SigV4 request signing, where the request body is part of the signature. normally Claude Code signs the request before sending. but terse modifies the body (compression), which would invalidate that signature. so we tell Claude Code to skip signing and send plain HTTP to terse. terse then compresses the body and signs the modified request itself via the AWS SDK before forwarding to Bedrock.
 
 ### anthropic direct
 
