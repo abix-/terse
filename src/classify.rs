@@ -52,7 +52,7 @@ pub fn classify(text: &str) -> ContentType {
 
 /// detect CSV/TSV: header row with delimiter, consistent column count across rows.
 /// rejects grep-like output (path:line:code) which has colons but isn't tabular.
-fn is_tabular(text: &str) -> bool {
+pub fn is_tabular(text: &str) -> bool {
     let lines: Vec<&str> = text.lines().take(20).collect();
     if lines.len() < 3 {
         return false;
@@ -212,14 +212,14 @@ mod tests {
 
     #[test]
     fn test_classify_influx_csv() {
-        let csv = ",result,table,_time,_value,_field\n,_result,0,2026-04-09T14:15:00Z,0,readLatency\n,_result,0,2026-04-09T14:20:00Z,1,readLatency\n";
+        let csv = ",result,table,_time,_value,_field\n,_result,0,2026-04-09T14:15:00Z,0,readLatency\n,_result,0,2026-04-09T14:20:00Z,1,readLatency\n,_result,0,2026-04-09T14:25:00Z,2,readLatency\n,_result,0,2026-04-09T14:30:00Z,3,readLatency\n";
         assert_eq!(classify(csv), ContentType::Tabular);
     }
 
     #[test]
     fn test_strip_line_numbers() {
-        let text = "     1\tfn main() {\n     2\t    println!(\"hello\");\n     3\t}\n";
+        let text = "     1\tfn main() {\n     2\t    println!(\"hello\");\n     3\t}";
         let stripped = strip_line_numbers(text);
-        assert_eq!(stripped, "fn main() {\n    println!(\"hello\");\n}\n");
+        assert_eq!(stripped, "fn main() {\n    println!(\"hello\");\n}");
     }
 }

@@ -1,3 +1,5 @@
+use crate::classify::{is_tabular, strip_line_numbers};
+use crate::tabular::compress_tabular;
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -15,26 +17,99 @@ static PRUNE_KEYS: &[&str] = &[
     "_requiredBy",
 ];
 
-/// compress JSON content: prune junk keys, then encode as TOON
+/// compress JSON content: prune junk keys, deep-compress string values, then TOON
 pub fn compress_json(text: &str) -> Option<String> {
     let value: Value = serde_json::from_str(text).ok()?;
 
-    // prune known junk keys first
+    // 1. prune known junk keys
     let pruned = deep_prune(value);
 
-    // encode as TOON (dense line-oriented format)
-    if let Ok(toon) = serde_toon2::to_string(&pruned) {
+    // 2. deep-compress string values (CSV inside JSON, nested JSON, etc.)
+    let compressed = deep_compress_strings(pruned);
+
+    // 3. encode as TOON (dense line-oriented format)
+    if let Ok(toon) = serde_toon2::to_string(&compressed) {
         if toon.len() < (text.len() as f64 * 0.95) as usize {
             return Some(toon);
         }
     }
 
     // fallback: plain minify
-    let minified = serde_json::to_string(&pruned).ok()?;
+    let minified = serde_json::to_string(&compressed).ok()?;
     if minified.len() < (text.len() as f64 * 0.95) as usize {
         Some(minified)
     } else {
         None
+    }
+}
+
+/// walk JSON tree and compress string values that contain structured data
+fn deep_compress_strings(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let compressed: serde_json::Map<String, Value> = map
+                .into_iter()
+                .map(|(k, v)| (k, deep_compress_strings(v)))
+                .collect();
+            Value::Object(compressed)
+        }
+        Value::Array(arr) => {
+            Value::Array(arr.into_iter().map(deep_compress_strings).collect())
+        }
+        Value::String(s) => {
+            if s.len() < 200 {
+                return Value::String(s);
+            }
+            // unescape \r\n sequences (JSON-escaped CSV often has these)
+            let unescaped = if s.contains("\\r\\n") || s.contains("\\n") || s.contains("\\t") {
+                s.replace("\\r\\n", "\n")
+                    .replace("\\n", "\n")
+                    .replace("\\t", "\t")
+            } else {
+                s.clone()
+            };
+
+            // try tabular (CSV/TSV)
+            if is_tabular(&unescaped) {
+                if let Some(compressed) = compress_tabular(&unescaped) {
+                    if compressed.len() < s.len() {
+                        return Value::String(compressed);
+                    }
+                }
+            }
+
+            // try nested JSON
+            if let Ok(inner) = serde_json::from_str::<Value>(&unescaped) {
+                // recurse into the parsed JSON
+                let inner_compressed = deep_compress_strings(inner);
+                // TOON-encode the inner value
+                if let Ok(toon) = serde_toon2::to_string(&inner_compressed) {
+                    if toon.len() < s.len() {
+                        return Value::String(toon);
+                    }
+                }
+                // fallback: minify inner JSON
+                if let Ok(minified) = serde_json::to_string(&inner_compressed) {
+                    if minified.len() < s.len() {
+                        return Value::String(minified);
+                    }
+                }
+            }
+
+            // try strip line numbers
+            let stripped = strip_line_numbers(&unescaped);
+            if stripped.len() < s.len() {
+                return Value::String(stripped);
+            }
+
+            // if unescaping alone saved space, use that
+            if unescaped.len() < s.len() {
+                return Value::String(unescaped);
+            }
+
+            Value::String(s)
+        }
+        other => other,
     }
 }
 

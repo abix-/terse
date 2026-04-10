@@ -54,7 +54,7 @@ pub fn compress_tabular(text: &str) -> Option<String> {
         let ratio = n_unique as f64 / num_rows as f64;
         if n_unique == 1 {
             group_cols.push(ci); // constant column -- always factor out
-        } else if ratio <= 0.1 || n_unique <= 10 {
+        } else if ratio <= 0.1 || (n_unique <= 10 && ratio < 0.4) {
             group_cols.push(ci);
         } else {
             data_cols.push(ci);
@@ -157,6 +157,9 @@ pub fn compress_tabular(text: &str) -> Option<String> {
         out.push('\n');
     }
 
+    // trim trailing whitespace
+    let out = out.trim_end().to_string();
+
     // only return if we actually saved space
     if out.len() < text.len() {
         Some(out)
@@ -246,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_compress_simple_csv() {
-        let csv = "name,city,score\nalice,nyc,95\nbob,nyc,87\ncharlie,nyc,92\ndave,nyc,88\n";
+        let csv = "name,city,score\nalice,nyc,95\nbob,nyc,87\ncharlie,nyc,92\ndave,nyc,88\neve,nyc,91\nfrank,nyc,85\ngrace,nyc,97\nhank,nyc,79\niris,nyc,84\njack,nyc,90\n";
         let result = compress_tabular(csv);
         assert!(result.is_some());
         let out = result.unwrap();
@@ -257,13 +260,7 @@ mod tests {
 
     #[test]
     fn test_compress_influx_style() {
-        let csv = ",result,table,_time,_value,_field,disk,host,vm\n\
-                   ,_result,0,2026-04-09T14:15:00Z,0,readIOPS,scsi0:0,esxi01,VM01\n\
-                   ,_result,0,2026-04-09T14:20:00Z,5,readIOPS,scsi0:0,esxi01,VM01\n\
-                   ,_result,0,2026-04-09T14:25:00Z,2,readIOPS,scsi0:0,esxi01,VM01\n\
-                   ,_result,1,2026-04-09T14:15:00Z,100,writeIOPS,scsi0:0,esxi01,VM01\n\
-                   ,_result,1,2026-04-09T14:20:00Z,150,writeIOPS,scsi0:0,esxi01,VM01\n\
-                   ,_result,1,2026-04-09T14:25:00Z,120,writeIOPS,scsi0:0,esxi01,VM01\n";
+        let csv = ",result,table,_time,_value,_field,disk,host,vm\n,_result,0,2026-04-09T14:15:00Z,0,readIOPS,scsi0:0,esxi01,VM01\n,_result,0,2026-04-09T14:20:00Z,5,readIOPS,scsi0:0,esxi01,VM01\n,_result,0,2026-04-09T14:25:00Z,2,readIOPS,scsi0:0,esxi01,VM01\n,_result,0,2026-04-09T14:30:00Z,3,readIOPS,scsi0:0,esxi01,VM01\n,_result,0,2026-04-09T14:35:00Z,1,readIOPS,scsi0:0,esxi01,VM01\n,_result,0,2026-04-09T14:40:00Z,4,readIOPS,scsi0:0,esxi01,VM01\n,_result,1,2026-04-09T14:15:00Z,100,writeIOPS,scsi0:0,esxi01,VM01\n,_result,1,2026-04-09T14:20:00Z,150,writeIOPS,scsi0:0,esxi01,VM01\n,_result,1,2026-04-09T14:25:00Z,120,writeIOPS,scsi0:0,esxi01,VM01\n,_result,1,2026-04-09T14:30:00Z,110,writeIOPS,scsi0:0,esxi01,VM01\n,_result,1,2026-04-09T14:35:00Z,130,writeIOPS,scsi0:0,esxi01,VM01\n,_result,1,2026-04-09T14:40:00Z,140,writeIOPS,scsi0:0,esxi01,VM01\n";
         let result = compress_tabular(csv);
         assert!(result.is_some());
         let out = result.unwrap();
