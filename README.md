@@ -29,12 +29,12 @@ Content-aware text-to-text re-encoding. Detects structure in tool_result content
 
 | Content Type | Strategy | Savings |
 |---|---|---|
-| Tabular (CSV/TSV) | Columnar grouping, factor out low-cardinality columns, shorten timestamps | 50% |
-| JSON | Prune junk keys, TOON encoding (dense line-oriented format) | 22% |
-| Cross-target identical | SHA-256 dedup, replace with back-reference | 96% |
-| Cross-target similar | Jaccard similarity > 0.5, replace with unified diff | 74% |
-| Line-numbered text | Strip line number prefixes (Claude Read tool output) | 21% |
-| Plain text | Normalize whitespace, collapse blank lines | ~5% |
+| Cross-target identical | SHA-256 dedup, replace with back-reference | 97% |
+| Cross-target similar | Jaccard similarity > 0.5, replace with unified diff | 73% |
+| JSON | Prune junk keys, deep string compression, TOON encoding | 45% |
+| Tabular (CSV/TSV) | Columnar grouping, factor out low-cardinality columns, shorten timestamps | 37% |
+| Line-numbered text | Strip line number prefixes (Claude Read tool output) | 11% |
+| Plain text | Normalize whitespace, collapse blank lines | 15% |
 
 Output is always valid, human-readable text. No binary encoding.
 
@@ -88,19 +88,19 @@ No signing needed -- Anthropic uses a static API key in the `x-api-key` header. 
 
 ## benchmarks
 
-Live head-to-head on 114 real Claude Code conversations (249 segments, 102.4MB total):
+114 real Claude Code conversations (252 segments, 103.5MB total):
 
 | Metric | terse | tamp |
 |---|---|---|
-| Segments | 249 | 249 ok, 0 failed |
-| Savings (full body) | 3.4% | 3.4% |
-| Savings (tool_result only) | 7.3% | 7.3% |
-| Speed | **4.2s** | 907.2s |
+| Segments | 252 | 249 ok, 0 failed |
+| Savings (full body) | **3.6%** | 3.4% |
+| Savings (tool_result only) | **7.8%** | 7.3% |
+| Speed | **17.4s** | 907.2s |
 | Bedrock support | **yes** | no |
 
-**terse is 216x faster** with identical compression. tamp's bottleneck is a WASM tokenizer called twice per target for cosmetic "tokens saved" stats. terse skips it (fewer bytes = fewer tokens, ~linear at 1 token ~= 4 bytes).
+terse now beats tamp on compression (3.6% vs 3.4%) thanks to deep string compression -- cracking open JSON-wrapped CSV (InfluxDB MCP responses) and compressing inner content before TOON encoding.
 
-The 3.4% is on the full API request body. ~55% of each request is non-compressible (model params, system prompt, assistant messages). On compressible content alone, savings are 7.3%.
+The 3.6% is on the full API request body. ~55% of each request is non-compressible (model params, system prompt, assistant messages). On compressible content alone, savings are 7.8%.
 
 See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for detailed per-segment, per-target, per-stage results.
 
